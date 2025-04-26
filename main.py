@@ -1,7 +1,7 @@
 """
 Wade Live 2.1 (Render Edition with Health Check Server)
 - Polls MLB API every 60 seconds
-- Only posts during Giants games (giants_schedule.json)
+- Only posts during Giants games (now reads giants_schedule.json using start_time_utc)
 - Posts based on updated rules (Giants HRs, scoring plays, priority players)
 - Logs posts to wade_posts_log.txt
 - Flask server on /health to keep Render happy
@@ -71,7 +71,8 @@ def run_health_server():
 def is_giants_game_today(schedule):
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     for game in schedule:
-        if game.get("date") == today and not game.get("off_day", False):
+        game_date = game.get("start_time_utc", "")[:10]  # Extract YYYY-MM-DD
+        if game_date == today:
             return True
     return False
 
@@ -79,6 +80,7 @@ def get_game_id():
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
     response = requests.get(url).json()
+
     for date in response.get("dates", []):
         for game in date.get("games", []):
             if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:

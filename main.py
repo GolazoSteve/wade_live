@@ -1,17 +1,19 @@
 """
-Wade Live 2.1 (Render Edition)
+Wade Live 2.1 (Render Edition with Health Check Server)
 - Polls MLB API every 60 seconds
-- Only posts during Giants games (checks giants_schedule.json)
-- Posts based on updated rules (Giants HRs, scoring plays, priority player moments)
+- Only posts during Giants games (giants_schedule.json)
+- Posts based on updated rules (Giants HRs, scoring plays, priority players)
 - Logs posts to wade_posts_log.txt
-- Uses environment variables for API keys and credentials
+- Flask server on /health to keep Render happy
 """
 
 import os
 import time
 import datetime
+import threading
 import requests
 import json
+from flask import Flask
 from openai import OpenAI
 from atproto import Client
 
@@ -45,14 +47,26 @@ except Exception as e:
 # Player priorities
 priority_players = {
     "Jung Hoo Lee": {"hits": True, "walks": True, "steals": True},
-    "Matt Chapman": {"xbh": True},  # Doubles, Triples, Home Runs
+    "Matt Chapman": {"xbh": True},
     "Tyler Fitzgerald": {"hits": True},
     "Willy Adames": {"xbh": True}
 }
 
 processed_play_ids = set()
 
-# === FUNCTIONS ===
+# === FLASK HEALTH SERVER ===
+
+app = Flask(__name__)
+
+@app.route('/health')
+def health_check():
+    return "OK", 200
+
+def run_health_server():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# === WADE LIVE FUNCTIONS ===
 
 def is_giants_game_today(schedule):
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
@@ -138,73 +152,57 @@ def log_post(post_text):
     with open("wade_posts_log.txt", "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {post_text}\n")
 
-# === MAIN LOOP ===
+# === MAIN ===
 
-print("🤖 Wade Live 2.1 (Render Edition) initialised...")
+if __name__ == "__main__":
+    threading.Thread(target=run_health_server, daemon=True).start()
+    print("🤖 Wade Live 2.1 (with Flask Health Check) initialised...")
 
-while True:
-    try:
-        if not is_giants_game_today(giants_schedule):
-            print("📆 No Giants game today. Sleeping...")
+    while True:
+        try:
+            if not is_giants_game_today(giants_schedule):
+                print("📆 No Giants game today. Sleeping...")
+                time.sleep(SLEEP_INTERVAL)
+                continue
+
+            game_id = get_game_id()
+            if not game_id:
+                print("❌ No Giants game found today. Sleeping...")
+                time.sleep(SLEEP_INTERVAL)
+                continue
+
+            print(f"📺 Monitoring Giants Game ID: {game_id}")
+
+            while True:
+                plays = fetch_all_plays(game_id)
+                print(f"🔍 Fetched {len(plays)} plays...")
+
+                for play in plays:
+                    play_id = play.get("playId")
+                    if not play_id or play_id in processed_play_ids:
+                        continue
+
+                    processed_play_ids.add(play_id)
+
+                    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
+                    event = play.get("result", {}).get("event", "Unknown")
+                    desc = play.get("result", {}).get("description", "")
+                    inning = play.get("about", {}).get("inning", "?")
+                    half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
+
+                    decision, reason = should_post(play)
+
+                    print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
+
+                    if decision:
+                        print("📢 Trigger matched. Generating post...")
+                        post = generate_post(desc)
+                        print(f"📤 Posting: {post}")
+                        client_bsky.send_post(text=post)
+                        log_post(post)
+
+                time.sleep(SLEEP_INTERVAL)
+
+        except Exception as e:
+            print(f"❌ ERROR: {e}")
             time.sleep(SLEEP_INTERVAL)
-            continue
-
-        game_id = get_game_id()
-        if not game_id:
-            print("❌ No Giants game found today. Sleeping...")
-            time.sleep(SLEEP_INTERVAL)
-            continue
-
-        print(f"📺 Monitoring Giants Game ID: {game_id}")
-        
-        while True:
-            plays = fetch_all_plays(game_id)
-            print(f"🔍 Fetched {len(plays)} plays...")
-
-            for play in plays:
-                play_id = play.get("playId")
-                if not play_id or play_id in processed_play_ids:
-                    continue
-
-                processed_play_ids.add(play_id)
-
-                batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
-                event = play.get("result", {}).get("event", "Unknown")
-                desc = play.get("result", {}).get("description", "")
-                inning = play.get("about", {}).get("inning", "?")
-                half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
-
-                decision, reason = should_post(play)
-
-                print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
-
-                if decision:
-                    print("📢 Trigger matched. Generating post...")
-                    post = generate_post(desc)
-                    print(f"📤 Posting: {post}")
-                    client_bsky.send_post(text=post)
-                    log_post(post)
-
-            time.sleep(SLEEP_INTERVAL)
-
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        time.sleep(SLEEP_INTERVAL)
-
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def run_fake_server():
-    server_address = ('', 10000)  # Any random unused port
-    httpd = HTTPServer(server_address, HealthCheckHandler)
-    httpd.serve_forever()
-
-# Start fake web server on a background thread
-threading.Thread(target=run_fake_server, daemon=True).start()
-

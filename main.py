@@ -190,3 +190,21 @@ while True:
     except Exception as e:
         print(f"❌ ERROR: {e}")
         time.sleep(SLEEP_INTERVAL)
+
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def run_fake_server():
+    server_address = ('', 10000)  # Any random unused port
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    httpd.serve_forever()
+
+# Start fake web server on a background thread
+threading.Thread(target=run_fake_server, daemon=True).start()
+

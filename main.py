@@ -68,25 +68,42 @@ def run_health_server():
 
 def is_giants_game_today(schedule):
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    print(f"✅ Checking Giants schedule for {today}")
     for game in schedule:
         game_date = game.get("start_time_utc", "")[:10]
         if game_date == today:
+            print("✅ Giants game found on schedule.")
             return True
+    print("❌ No Giants game on schedule today.")
     return False
 
 def get_game_id():
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
-    response = requests.get(url).json()
-    for date in response.get("dates", []):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        print(f"❌ Error fetching schedule: {e}")
+        return None
+
+    for date in data.get("dates", []):
         for game in date.get("games", []):
             if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:
-                return game["gamePk"]
+                game_pk = game["gamePk"]
+                print(f"🎯 Found Giants Game ID: {game_pk}")
+                return game_pk
+    print("❌ No Giants game found in MLB API today.")
     return None
 
 def fetch_all_plays(game_id):
     url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
-    return requests.get(url).json().get("liveData", {}).get("plays", {}).get("allPlays", [])
+    try:
+        return requests.get(url).json().get("liveData", {}).get("plays", {}).get("allPlays", [])
+    except Exception as e:
+        print(f"❌ Error fetching plays: {e}")
+        return []
 
 def is_giants_pa(play):
     batter = play.get("matchup", {}).get("batter", {}).get("fullName", "").lower()
@@ -163,23 +180,27 @@ try:
         print("🕒 Main loop starting...")
 
         if not is_giants_game_today(giants_schedule):
-            print("📆 No Giants game today. Sleeping...")
+            print("📆 No Giants game today in local schedule. Sleeping...")
             time.sleep(SLEEP_INTERVAL)
             continue
 
-        print("✅ Giants game scheduled. Finding Game ID...")
         game_id = get_game_id()
 
         if not game_id:
-            print("❌ No valid Giants game found. Sleeping...")
+            print("❌ No valid Giants game found via API. Sleeping...")
             time.sleep(SLEEP_INTERVAL)
             continue
 
-        print(f"📺 Monitoring Game ID: {game_id}")
+        print(f"🎯 Monitoring plays for Game ID: {game_id}")
 
         while True:
             try:
                 plays = fetch_all_plays(game_id)
+                if not plays:
+                    print("❌ No plays fetched. Retrying...")
+                    time.sleep(SLEEP_INTERVAL)
+                    continue
+
                 print(f"🧪 Fetched {len(plays)} plays.")
 
                 for play in plays:

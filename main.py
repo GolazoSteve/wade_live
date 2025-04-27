@@ -1,10 +1,10 @@
 """
-Wade Live 2.1 (Render Edition with Health Check Server)
-- Polls MLB API every 60 seconds
-- Only posts during Giants games (now reads giants_schedule.json using start_time_utc)
-- Posts based on updated rules (Giants HRs, scoring plays, priority players)
-- Logs posts to wade_posts_log.txt
-- Flask server on /health to keep Render happy
+Wade Live 2.2 (Render Edition with Test Mode)
+- Toggle between Live Mode and Test Mode using Environment Variable
+- Polls MLB API every 60 seconds (Live Mode) or replays completed game (Test Mode)
+- Posts either to Bluesky (Live) or saves to test_output.txt (Test Mode)
+- 2 second delay between plays during Test Mode
+- Flask server on /health for Render
 """
 
 import os
@@ -19,7 +19,11 @@ from atproto import Client
 
 # === CONFIGURATION ===
 
-SLEEP_INTERVAL = 60  # Check every 60 seconds
+# Toggle Test Mode based on Environment Variable
+TEST_MODE = os.getenv("WADE_TEST_MODE", "False").lower() == "true"
+
+SLEEP_INTERVAL = 60  # 60 sec between live polls
+TEST_PLAY_DELAY = 2  # 2 sec between plays in test mode
 TEAM_ID = 137  # San Francisco Giants
 
 # Load environment variables
@@ -44,7 +48,6 @@ except Exception as e:
     print(f"❌ Could not load Giants schedule: {e}")
     giants_schedule = []
 
-# Player priorities
 priority_players = {
     "Jung Hoo Lee": {"hits": True, "walks": True, "steals": True},
     "Matt Chapman": {"xbh": True},
@@ -66,26 +69,42 @@ def run_health_server():
     port = int(os.environ.get('PORT', 10000))
     app.run(host="0.0.0.0", port=port)
 
-# === WADE LIVE FUNCTIONS ===
+# === WADE FUNCTIONS ===
 
 def is_giants_game_today(schedule):
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     for game in schedule:
-        game_date = game.get("start_time_utc", "")[:10]  # Extract YYYY-MM-DD
+        game_date = game.get("start_time_utc", "")[:10]
         if game_date == today:
             return True
     return False
 
-def get_game_id():
-    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-    url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
+def get_most_recent_giants_game():
+    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=137&endDate=" + datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d") + "&startDate=2024-03-01"
     response = requests.get(url).json()
-
-    for date in response.get("dates", []):
-        for game in date.get("games", []):
-            if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:
+    games = response.get("dates", [])
+    games = sorted(games, key=lambda x: x['date'], reverse=True)
+    for day in games:
+        for game in day.get("games", []):
+            if game["status"]["abstractGameState"] == "Final":
                 return game["gamePk"]
     return None
+
+def get_game_id():
+    if TEST_MODE:
+        game_id = get_most_recent_giants_game()
+        if game_id:
+            print(f"🧪 [TEST MODE] Using most recent completed Giants Game ID: {game_id}")
+        return game_id
+    else:
+        today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+        url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
+        response = requests.get(url).json()
+        for date in response.get("dates", []):
+            for game in date.get("games", []):
+                if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:
+                    return game["gamePk"]
+        return None
 
 def fetch_all_plays(game_id):
     url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
@@ -149,60 +168,68 @@ def generate_post(description):
         post += " #SFGiants"
     return post[:300]
 
-def log_post(post_text):
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
-    with open("wade_posts_log.txt", "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {post_text}\n")
+def post_to_bluesky_or_log(post_text):
+    if TEST_MODE:
+        print(f"🧪 [TEST POST] {post_text}")
+        with open("test_output.txt", "a", encoding="utf-8") as f:
+            f.write(post_text + "\n\n")
+    else:
+        client_bsky.send_post(text=post_text)
 
 # === MAIN ===
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("🤖 Wade Live 2.1 (with Flask Health Check) initialised...")
+    print("🤖 Wade Live 2.2 (Test Mode + Health Check) initialised...")
 
     while True:
         try:
-            if not is_giants_game_today(giants_schedule):
+            print("🕒 Checking if Giants game today...")
+
+            if not TEST_MODE and not is_giants_game_today(giants_schedule):
                 print("📆 No Giants game today. Sleeping...")
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
+            print("✅ Giants game scheduled. Finding Game ID...")
+
             game_id = get_game_id()
             if not game_id:
-                print("❌ No Giants game found today. Sleeping...")
+                print("❌ No Giants game found. Sleeping...")
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
-            print(f"📺 Monitoring Giants Game ID: {game_id}")
+            print(f"📺 Monitoring Game ID: {game_id}")
 
-            while True:
-                plays = fetch_all_plays(game_id)
-                print(f"🔍 Fetched {len(plays)} plays...")
+            plays = fetch_all_plays(game_id)
+            print(f"🧪 Fetched {len(plays)} plays from game.")
 
-                for play in plays:
-                    play_id = play.get("playId")
-                    if not play_id or play_id in processed_play_ids:
-                        continue
+            for play in plays:
+                play_id = play.get("playId")
+                if not play_id or play_id in processed_play_ids:
+                    continue
 
-                    processed_play_ids.add(play_id)
+                processed_play_ids.add(play_id)
 
-                    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
-                    event = play.get("result", {}).get("event", "Unknown")
-                    desc = play.get("result", {}).get("description", "")
-                    inning = play.get("about", {}).get("inning", "?")
-                    half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
+                batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
+                event = play.get("result", {}).get("event", "Unknown")
+                desc = play.get("result", {}).get("description", "")
+                inning = play.get("about", {}).get("inning", "?")
+                half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
 
-                    decision, reason = should_post(play)
+                decision, reason = should_post(play)
 
-                    print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
+                print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
 
-                    if decision:
-                        print("📢 Trigger matched. Generating post...")
-                        post = generate_post(desc)
-                        print(f"📤 Posting: {post}")
-                        client_bsky.send_post(text=post)
-                        log_post(post)
+                if decision:
+                    print("📢 Trigger matched. Generating post...")
+                    post = generate_post(desc)
+                    post_to_bluesky_or_log(post)
 
+                if TEST_MODE:
+                    time.sleep(TEST_PLAY_DELAY)
+
+            if not TEST_MODE:
                 time.sleep(SLEEP_INTERVAL)
 
         except Exception as e:

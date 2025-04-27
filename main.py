@@ -113,13 +113,27 @@ def get_game_id():
         return game_id
     else:
         today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-        url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
-        response = requests.get(url).json()
-        for date in response.get("dates", []):
+        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}"
+        print(f"🌐 Requesting: {url}")
+        response = requests.get(url)
+        
+        try:
+            data = response.json()
+            print(f"🌐 API Response Sample: {json.dumps(data, indent=2)[:1000]}")  # Print first 1000 characters
+        except Exception as e:
+            print(f"❌ Failed to parse JSON: {e}")
+            return None
+        
+        for date in data.get("dates", []):
             for game in date.get("games", []):
+                print(f"🌟 Found game: {game.get('teams', {})}")  # Print teams for each game
                 if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:
+                    print(f"✅ Found GamePk: {game['gamePk']}")
                     return game["gamePk"]
+
+        print("❌ No Giants game found in today's games.")
         return None
+
 
 def fetch_all_plays(game_id):
     url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"

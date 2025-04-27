@@ -19,7 +19,6 @@ from atproto import Client
 
 # === CONFIGURATION ===
 
-# Toggle Test Mode based on Environment Variable
 TEST_MODE = os.getenv("WADE_TEST_MODE", "False").lower() == "true"
 
 SLEEP_INTERVAL = 60  # 60 sec between live polls
@@ -80,15 +79,26 @@ def is_giants_game_today(schedule):
     return False
 
 def get_most_recent_giants_game():
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=137&endDate=" + datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d") + "&startDate=2024-03-01"
+    today = datetime.datetime.now(datetime.UTC)
+    seven_days_ago = today - datetime.timedelta(days=7)
+
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=137&startDate={seven_days_ago.strftime('%Y-%m-%d')}&endDate={today.strftime('%Y-%m-%d')}"
     response = requests.get(url).json()
-    games = response.get("dates", [])
-    games = sorted(games, key=lambda x: x['date'], reverse=True)
-    for day in games:
+    games = []
+
+    for day in response.get("dates", []):
         for game in day.get("games", []):
             if game["status"]["abstractGameState"] == "Final":
-                return game["gamePk"]
-    return None
+                games.append((game["gameDate"], game["gamePk"]))
+
+    if not games:
+        print("❌ No final Giants games found in past 7 days.")
+        return None
+
+    games.sort(reverse=True)
+    most_recent_game = games[0]
+    print(f"🧪 Found most recent completed Giants game on {most_recent_game[0]} with gamePk: {most_recent_game[1]}")
+    return most_recent_game[1]
 
 def get_game_id():
     if TEST_MODE:

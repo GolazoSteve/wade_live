@@ -10,10 +10,7 @@ from atproto import Client
 
 # === CONFIGURATION ===
 
-TEST_MODE = os.getenv("WADE_TEST_MODE", "False").lower() == "true"
-
 SLEEP_INTERVAL = 60
-TEST_PLAY_DELAY = 2
 TEAM_ID = 137
 
 # Environment
@@ -165,37 +162,28 @@ def generate_post(description):
 
 def post_to_bluesky_or_log(post_text):
     global client_bsky
-    if TEST_MODE:
-        print(f"🧪 [TEST POST] {post_text}")
-        commentary_log.append(f"🧪 POST: {post_text}")
-        with open("test_output.txt", "a", encoding="utf-8") as f:
-            f.write(post_text + "\n\n")
-    else:
-        if client_bsky is None:
-            client_bsky = Client()
-            client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
-        client_bsky.send_post(text=post_text)
+    if client_bsky is None:
+        client_bsky = Client()
+        client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
+    client_bsky.send_post(text=post_text)
 
 # === MAIN ===
 
 try:
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("🤖 Wade Live 2.5 Started...")
+    print("🤖 Wade Live Started...")
 
     while True:
         try:
             print("🕒 Main loop starting...")
 
-            if not TEST_MODE:
-                if not is_giants_game_today(giants_schedule):
-                    print("🗓️ No Giants game today. Sleeping...")
-                    time.sleep(SLEEP_INTERVAL)
-                    continue
-                print("✅ Giants game scheduled. Finding Game ID...")
-                game_id = get_game_id()
-            else:
-                print("🧪 TEST MODE active. Fetching most recent completed Giants game...")
-                game_id = get_most_recent_giants_game()
+            if not is_giants_game_today(giants_schedule):
+                print("🗓️ No Giants game today. Sleeping...")
+                time.sleep(SLEEP_INTERVAL)
+                continue
+
+            print("✅ Giants game scheduled. Finding Game ID...")
+            game_id = get_game_id()
 
             if not game_id:
                 print("❌ No valid Giants game found. Sleeping...")
@@ -209,8 +197,10 @@ try:
 
             for play in plays:
                 play_id = play.get("playId")
-                if not play_id:
+                if not play_id or play_id in processed_play_ids:
                     continue
+
+                processed_play_ids.add(play_id)
 
                 batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
                 event = play.get("result", {}).get("event", "Unknown")
@@ -229,14 +219,7 @@ try:
                     post = generate_post(play.get("result", {}).get("description", ""))
                     post_to_bluesky_or_log(post)
 
-                if TEST_MODE:
-                    time.sleep(TEST_PLAY_DELAY)
-
-            if TEST_MODE:
-                processed_play_ids.clear()
-                time.sleep(2)
-            else:
-                time.sleep(SLEEP_INTERVAL)
+            time.sleep(SLEEP_INTERVAL)
 
         except Exception as e:
             print(f"❌ ERROR during play monitoring: {e}")

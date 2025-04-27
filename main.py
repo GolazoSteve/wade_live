@@ -1,7 +1,3 @@
-"""
-Wade Live 2.5 (Test Mode + Monitor + Save Posts + Replay Loop)
-"""
-
 import os
 import time
 import datetime
@@ -83,61 +79,32 @@ def is_giants_game_today(schedule):
             return True
     return False
 
-def get_most_recent_giants_game():
-    today = datetime.datetime.now(datetime.UTC)
-    seven_days_ago = today - datetime.timedelta(days=7)
-
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=137&startDate={seven_days_ago.strftime('%Y-%m-%d')}&endDate={today.strftime('%Y-%m-%d')}"
-    response = requests.get(url).json()
-    games = []
-
-    for day in response.get("dates", []):
-        for game in day.get("games", []):
-            if game["status"]["abstractGameState"] == "Final":
-                games.append((game["gameDate"], game["gamePk"]))
-
-    if not games:
-        print("❌ No final Giants games found in past 7 days.")
-        return None
-
-    games.sort(reverse=True)
-    most_recent_game = games[0]
-    print(f"🧪 Found most recent completed Giants game on {most_recent_game[0]} with gamePk: {most_recent_game[1]}")
-    return most_recent_game[1]
-
 def get_game_id():
-    if TEST_MODE:
-        game_id = get_most_recent_giants_game()
-        if game_id:
-            print(f"🧪 [TEST MODE] Using most recent completed Giants Game ID: {game_id}")
-        return game_id
-    else:
-        today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}"
-        print(f"🌐 Requesting: {url}")
-        response = requests.get(url)
-        
-        try:
-            data = response.json()
-            print(f"🌐 API Response Sample: {json.dumps(data, indent=2)[:1000]}")  # Print first 1000 characters
-        except Exception as e:
-            print(f"❌ Failed to parse JSON: {e}")
-            return None
-        
-        for date in data.get("dates", []):
-            for game in date.get("games", []):
-                print(f"🌟 Found game: {game.get('teams', {})}")  # Print teams for each game
-                if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:
-                    print(f"✅ Found GamePk: {game['gamePk']}")
-                    return game["gamePk"]
-
-        print("❌ No Giants game found in today's games.")
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}"
+    print(f"🌐 Requesting: {url}")
+    response = requests.get(url)
+    try:
+        data = response.json()
+    except Exception as e:
+        print(f"❌ Failed to parse JSON: {e}")
         return None
 
+    for date in data.get("dates", []):
+        for game in date.get("games", []):
+            away_id = game["teams"]["away"]["team"]["id"]
+            home_id = game["teams"]["home"]["team"]["id"]
+            if TEAM_ID in [away_id, home_id]:
+                print(f"✅ Giants game found: {game['gamePk']}")
+                return game["gamePk"]
+
+    print("❌ No Giants game found today.")
+    return None
 
 def fetch_all_plays(game_id):
     url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
-    return requests.get(url).json().get("liveData", {}).get("plays", {}).get("allPlays", [])
+    response = requests.get(url)
+    return response.json().get("liveData", {}).get("plays", {}).get("allPlays", [])
 
 def is_giants_pa(play):
     batter = play.get("matchup", {}).get("batter", {}).get("fullName", "").lower()
@@ -169,15 +136,12 @@ def should_post(play):
                 return True, f"Priority: Jung Hoo Lee {event}"
             if event == "Stolen Base":
                 return True, "Priority: Jung Hoo Lee Stolen Base"
-        elif batter == "Matt Chapman":
-            if event in {"Double", "Triple", "Home Run"}:
-                return True, f"Priority: Matt Chapman {event}"
-        elif batter == "Tyler Fitzgerald":
-            if event in {"Single", "Double", "Triple", "Home Run"}:
-                return True, f"Priority: Tyler Fitzgerald {event}"
-        elif batter == "Willy Adames":
-            if event in {"Double", "Triple", "Home Run"}:
-                return True, f"Priority: Willy Adames {event}"
+        elif batter == "Matt Chapman" and event in {"Double", "Triple", "Home Run"}:
+            return True, f"Priority: Matt Chapman {event}"
+        elif batter == "Tyler Fitzgerald" and event in {"Single", "Double", "Triple", "Home Run"}:
+            return True, f"Priority: Tyler Fitzgerald {event}"
+        elif batter == "Willy Adames" and event in {"Double", "Triple", "Home Run"}:
+            return True, f"Priority: Willy Adames {event}"
 
     return False, "No posting condition met"
 
@@ -214,16 +178,16 @@ def post_to_bluesky_or_log(post_text):
 
 try:
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("🤖 Wade Live 2.5 (Test Mode + Monitor + Save Posts + Replay Loop) initialised...")
+    print("🤖 Wade Live 2.5 Started...")
 
     while True:
         try:
-            print("🕒 Starting main loop...")
+            print("🕒 Main loop starting...")
 
             if not TEST_MODE:
                 print("🕒 Checking if Giants game today...")
                 if not is_giants_game_today(giants_schedule):
-                    print("📆 No Giants game today. Sleeping...")
+                    print("🗓️ No Giants game today. Sleeping...")
                     time.sleep(SLEEP_INTERVAL)
                     continue
                 print("✅ Giants game scheduled. Finding Game ID...")
@@ -243,11 +207,12 @@ try:
             print(f"🧪 Fetched {len(plays)} plays from game.")
 
             for play in plays:
-                play_id = play.get("playId")
-                if not play_id or play_id in processed_play_ids:
-                    continue
+                print(f"🌟 Play snapshot: {json.dumps(play, indent=2)[:400]}...")
 
-                processed_play_ids.add(play_id)
+                play_id = play.get("playId")
+                if not play_id:
+                    continue
+                # processed_play_ids.add(play_id)  # TEMPORARY SKIP to force fresh processing
 
                 batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
                 event = play.get("result", {}).get("event", "Unknown")
@@ -258,7 +223,7 @@ try:
                 decision, reason = should_post(play)
 
                 log_line = f"[{inning}{half}] {batter} — {event.upper()} — Decision: {'POST' if decision else 'Skipped'} ({reason})"
-                print(f"📃 {log_line}")
+                print(f"📜 {log_line}")
                 commentary_log.append(log_line)
 
                 if decision:
@@ -273,8 +238,7 @@ try:
                 print("🧪 Test Mode: Finished replaying game. Restarting replay...")
                 processed_play_ids.clear()
                 time.sleep(2)
-
-            if not TEST_MODE:
+            else:
                 time.sleep(SLEEP_INTERVAL)
 
         except Exception as e:

@@ -59,7 +59,7 @@ def health_check():
 
 @app.route('/monitor')
 def monitor_page():
-    html = "<h1>Wade Live Monitor</h1><ul>"
+    html = "<h1>Wade Live Monitor</h1><ul style='font-family:monospace; font-size:14px;'>"
     for entry in commentary_log[-150:]:
         html += f"<li>{entry}</li>"
     html += "</ul><script>setTimeout(()=>location.reload(), 5000);</script>"
@@ -82,7 +82,6 @@ def is_giants_game_today(schedule):
 def get_game_id():
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}"
-    print(f"🌐 Requesting: {url}")
     response = requests.get(url)
     try:
         data = response.json()
@@ -122,28 +121,31 @@ def should_post(play):
     rbi = play.get("result", {}).get("rbi", 0)
 
     if not event or not desc or event.lower() == "pending":
-        return False, "No event/description yet"
+        return False, "No post: Event not finalized yet"
 
-    if event == "Home Run" and is_giants_pa(play):
-        return True, "Giants Home Run"
+    if not is_giants_pa(play):
+        return False, "No post: Opponent batter"
 
-    if is_giants_pa(play) and rbi > 0:
-        return True, "Giants RBI scoring play"
+    if event == "Home Run":
+        return True, "POST: Giants Home Run"
+
+    if rbi > 0:
+        return True, "POST: Giants RBI play"
 
     if batter in priority_players:
         if batter == "Jung Hoo Lee":
             if event in {"Single", "Double", "Triple", "Home Run", "Walk", "Hit By Pitch"}:
-                return True, f"Priority: Jung Hoo Lee {event}"
+                return True, f"POST: Jung Hoo Lee {event}"
             if event == "Stolen Base":
-                return True, "Priority: Jung Hoo Lee Stolen Base"
+                return True, "POST: Jung Hoo Lee Stolen Base"
         elif batter == "Matt Chapman" and event in {"Double", "Triple", "Home Run"}:
-            return True, f"Priority: Matt Chapman {event}"
+            return True, f"POST: Matt Chapman {event}"
         elif batter == "Tyler Fitzgerald" and event in {"Single", "Double", "Triple", "Home Run"}:
-            return True, f"Priority: Tyler Fitzgerald {event}"
+            return True, f"POST: Tyler Fitzgerald {event}"
         elif batter == "Willy Adames" and event in {"Double", "Triple", "Home Run"}:
-            return True, f"Priority: Willy Adames {event}"
+            return True, f"POST: Willy Adames {event}"
 
-    return False, "No posting condition met"
+    return False, "No post: Routine Giants out"
 
 def generate_post(description):
     messages = [
@@ -185,7 +187,6 @@ try:
             print("🕒 Main loop starting...")
 
             if not TEST_MODE:
-                print("🕒 Checking if Giants game today...")
                 if not is_giants_game_today(giants_schedule):
                     print("🗓️ No Giants game today. Sleeping...")
                     time.sleep(SLEEP_INTERVAL)
@@ -207,35 +208,31 @@ try:
             print(f"🧪 Fetched {len(plays)} plays from game.")
 
             for play in plays:
-                print(f"🌟 Play snapshot: {json.dumps(play, indent=2)[:400]}...")
-
                 play_id = play.get("playId")
                 if not play_id:
                     continue
-                # processed_play_ids.add(play_id)  # TEMPORARY SKIP to force fresh processing
 
                 batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
                 event = play.get("result", {}).get("event", "Unknown")
-                desc = play.get("result", {}).get("description", "")
                 inning = play.get("about", {}).get("inning", "?")
                 half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
 
                 decision, reason = should_post(play)
+                icon = "✅" if decision else "❌"
+                log_line = f"[Inning {inning}{half}] Batter: {batter} | Event: {event} | {icon} {reason}"
 
-                log_line = f"[{inning}{half}] {batter} — {event.upper()} — Decision: {'POST' if decision else 'Skipped'} ({reason})"
-                print(f"📜 {log_line}")
+                print(log_line)
                 commentary_log.append(log_line)
 
                 if decision:
                     print("📢 Trigger matched. Generating post...")
-                    post = generate_post(desc)
+                    post = generate_post(play.get("result", {}).get("description", ""))
                     post_to_bluesky_or_log(post)
 
                 if TEST_MODE:
                     time.sleep(TEST_PLAY_DELAY)
 
             if TEST_MODE:
-                print("🧪 Test Mode: Finished replaying game. Restarting replay...")
                 processed_play_ids.clear()
                 time.sleep(2)
             else:

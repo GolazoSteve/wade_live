@@ -1,10 +1,5 @@
 """
-Wade Live 2.3 (Test Mode + Live Monitor)
-- Test Mode or Live Mode controlled by WADE_TEST_MODE env var
-- Flask health server (port 10000)
-- /monitor webpage shows live commentary feed
-- OpenAI and Bluesky integration
-- Safe delayed Bluesky login
+Wade Live 2.4 (Strict Test Mode + Live Monitor + Save Posts)
 """
 
 import os
@@ -21,20 +16,20 @@ from atproto import Client
 
 TEST_MODE = os.getenv("WADE_TEST_MODE", "False").lower() == "true"
 
-SLEEP_INTERVAL = 60  # seconds between live polls
-TEST_PLAY_DELAY = 2  # seconds between plays in test mode
-TEAM_ID = 137  # Giants
+SLEEP_INTERVAL = 60
+TEST_PLAY_DELAY = 2
+TEAM_ID = 137
 
-# Environment variables
+# Environment
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BLUESKY_HANDLE = os.getenv("BLUESKY_HANDLE")
 BLUESKY_PASSWORD = os.getenv("BLUESKY_PASSWORD")
 
 # Clients
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
-client_bsky = None  # Lazy login later
+client_bsky = None
 
-# Commentary memory log for the /monitor page
+# Memory log for monitor
 commentary_log = []
 
 # Load Wade's prompt
@@ -69,7 +64,7 @@ def health_check():
 @app.route('/monitor')
 def monitor_page():
     html = "<h1>Wade Live Monitor</h1><ul>"
-    for entry in commentary_log[-100:]:
+    for entry in commentary_log[-150:]:
         html += f"<li>{entry}</li>"
     html += "</ul><script>setTimeout(()=>location.reload(), 5000);</script>"
     return html
@@ -192,7 +187,7 @@ def post_to_bluesky_or_log(post_text):
     global client_bsky
     if TEST_MODE:
         print(f"🧪 [TEST POST] {post_text}")
-        commentary_log.append(f"🧪 {post_text}")
+        commentary_log.append(f"🧪 POST: {post_text}")
         with open("test_output.txt", "a", encoding="utf-8") as f:
             f.write(post_text + "\n\n")
     else:
@@ -205,7 +200,7 @@ def post_to_bluesky_or_log(post_text):
 
 try:
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("🤖 Wade Live 2.3 (Test Mode + Health Check + Monitor) initialised...")
+    print("🤖 Wade Live 2.4 (Strict Test Mode + Monitor + Save Posts) initialised...")
 
     while True:
         try:
@@ -244,7 +239,7 @@ try:
 
                 decision, reason = should_post(play)
 
-                log_line = f"[{inning}{half}] {batter} — {event.upper()} — Reason: {reason}"
+                log_line = f"[{inning}{half}] {batter} — {event.upper()} — Decision: {'POST' if decision else 'Skipped'} ({reason})"
                 print(f"📃 {log_line}")
                 commentary_log.append(log_line)
 

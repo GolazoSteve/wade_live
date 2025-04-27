@@ -1,11 +1,10 @@
 """
-Wade Live 2.2 (Render Edition - Crash-Protected Test Mode)
-- Toggle between Live Mode and Test Mode using Environment Variable
-- Polls MLB API every 60 seconds (Live Mode) or replays completed game once (Test Mode)
-- Posts either to Bluesky (Live) or saves to test_output.txt (Test Mode)
-- 2 second delay between plays during Test Mode
-- Flask server on /health for Render
-- Fatal startup errors are now printed cleanly
+Wade Live 2.3 (Test Mode + Live Monitor)
+- Test Mode or Live Mode controlled by WADE_TEST_MODE env var
+- Flask health server (port 10000)
+- /monitor webpage shows live commentary feed
+- OpenAI and Bluesky integration
+- Safe delayed Bluesky login
 """
 
 import os
@@ -22,19 +21,21 @@ from atproto import Client
 
 TEST_MODE = os.getenv("WADE_TEST_MODE", "False").lower() == "true"
 
-SLEEP_INTERVAL = 60  # 60 sec between live polls
-TEST_PLAY_DELAY = 2  # 2 sec between plays in test mode
-TEAM_ID = 137  # San Francisco Giants
+SLEEP_INTERVAL = 60  # seconds between live polls
+TEST_PLAY_DELAY = 2  # seconds between plays in test mode
+TEAM_ID = 137  # Giants
 
-# Load environment variables
+# Environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BLUESKY_HANDLE = os.getenv("BLUESKY_HANDLE")
 BLUESKY_PASSWORD = os.getenv("BLUESKY_PASSWORD")
 
 # Clients
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
-client_bsky = Client()
-client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
+client_bsky = None  # Lazy login later
+
+# Commentary memory log for the /monitor page
+commentary_log = []
 
 # Load Wade's prompt
 with open("wade_prompt.txt", "r", encoding="utf-8") as f:
@@ -57,13 +58,21 @@ priority_players = {
 
 processed_play_ids = set()
 
-# === FLASK HEALTH SERVER ===
+# === FLASK SERVER ===
 
 app = Flask(__name__)
 
 @app.route('/health')
 def health_check():
     return "OK", 200
+
+@app.route('/monitor')
+def monitor_page():
+    html = "<h1>Wade Live Monitor</h1><ul>"
+    for entry in commentary_log[-100:]:
+        html += f"<li>{entry}</li>"
+    html += "</ul><script>setTimeout(()=>location.reload(), 5000);</script>"
+    return html
 
 def run_health_server():
     port = int(os.environ.get('PORT', 10000))
@@ -180,18 +189,23 @@ def generate_post(description):
     return post[:300]
 
 def post_to_bluesky_or_log(post_text):
+    global client_bsky
     if TEST_MODE:
         print(f"🧪 [TEST POST] {post_text}")
+        commentary_log.append(f"🧪 {post_text}")
         with open("test_output.txt", "a", encoding="utf-8") as f:
             f.write(post_text + "\n\n")
     else:
+        if client_bsky is None:
+            client_bsky = Client()
+            client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
         client_bsky.send_post(text=post_text)
 
 # === MAIN ===
 
 try:
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("🤖 Wade Live 2.2 (Test Mode + Health Check) initialised...")
+    print("🤖 Wade Live 2.3 (Test Mode + Health Check + Monitor) initialised...")
 
     while True:
         try:
@@ -230,7 +244,9 @@ try:
 
                 decision, reason = should_post(play)
 
-                print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
+                log_line = f"[{inning}{half}] {batter} — {event.upper()} — Reason: {reason}"
+                print(f"📃 {log_line}")
+                commentary_log.append(log_line)
 
                 if decision:
                     print("📢 Trigger matched. Generating post...")

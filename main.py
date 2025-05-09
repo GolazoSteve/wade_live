@@ -1,104 +1,191 @@
-print("📡 Wade Watch LIVE MODE ENGAGED. LET'S GO GIANTS")
-game_id = get_game_id(TEAM_ID)
-if not game_id:
-    print("❌ No Giants game found today.")
-    exit()
+"""
+Wade Live 2.1 (Render Edition)
+- Polls MLB API every 60 seconds
+- Only posts during Giants games (checks giants_schedule.json)
+- Posts based on updated rules (Giants HRs, scoring plays, priority player moments)
+- Logs posts to wade_posts_log.txt
+- Uses environment variables for API keys and credentials
+"""
 
-print(f"🎮 Watching Game ID: {game_id}")
+import os
+import time
+import datetime
+import requests
+import json
+from openai import OpenAI
+from atproto import Client
+
+# === CONFIGURATION ===
+
+SLEEP_INTERVAL = 60  # Check every 60 seconds
+TEAM_ID = 137  # San Francisco Giants
+
+# Load environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+BLUESKY_HANDLE = os.getenv("BLUESKY_HANDLE")
+BLUESKY_PASSWORD = os.getenv("BLUESKY_PASSWORD")
+
+# Clients
+client_ai = OpenAI(api_key=OPENAI_API_KEY)
+client_bsky = Client()
+client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
+
+# Load Wade's prompt
+with open("wade_prompt.txt", "r", encoding="utf-8") as f:
+    WADE_PROMPT = f.read()
+
+# Load Giants schedule
+try:
+    with open("giants_schedule.json", "r", encoding="utf-8") as f:
+        giants_schedule = json.load(f)
+except Exception as e:
+    print(f"❌ Could not load Giants schedule: {e}")
+    giants_schedule = []
+
+# Player priorities
+priority_players = {
+    "Jung Hoo Lee": {"hits": True, "walks": True, "steals": True},
+    "Matt Chapman": {"xbh": True},
+    "Tyler Fitzgerald": {"hits": True},
+    "Willy Adames": {"xbh": True}
+}
+
+processed_play_ids = set()
+
+# === FUNCTIONS ===
+
+def is_giants_game_today(schedule):
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    for game in schedule:
+        if game.get("date") == today and not game.get("off_day", False):
+            return True
+    return False
+
+def get_game_id():
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
+    response = requests.get(url).json()
+    for date in response.get("dates", []):
+        for game in date.get("games", []):
+            if TEAM_ID in [game["teams"]["home"]["team"]["id"], game["teams"]["away"]["team"]["id"]]:
+                return game["gamePk"]
+    return None
+
+def fetch_all_plays(game_id):
+    url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
+    return requests.get(url).json().get("liveData", {}).get("plays", {}).get("allPlays", [])
+
+def is_giants_pa(play):
+    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "").lower()
+    giants = ["jung hoo lee", "matt chapman", "wilmer flores", "patrick bailey", "michael conforto", "tyler fitzgerald", "heliot ramos", "spencer huff"]
+    team_id = (
+        play.get("team", {}).get("id") or
+        play.get("matchup", {}).get("battingTeam", {}).get("id")
+    )
+    return team_id == TEAM_ID or batter in giants
+
+def should_post(play):
+    event = play.get("result", {}).get("event", "")
+    desc = play.get("result", {}).get("description", "")
+    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "")
+    rbi = play.get("result", {}).get("rbi", 0)
+
+    if not event or not desc or event.lower() == "pending":
+        return False, "No event/description yet"
+
+    if event == "Home Run" and is_giants_pa(play):
+        return True, "Giants Home Run"
+
+    if is_giants_pa(play) and rbi > 0:
+        return True, "Giants RBI scoring play"
+
+    if batter in priority_players:
+        if batter == "Jung Hoo Lee":
+            if event in {"Single", "Double", "Triple", "Home Run", "Walk", "Hit By Pitch"}:
+                return True, f"Priority: Jung Hoo Lee {event}"
+            if event == "Stolen Base":
+                return True, "Priority: Jung Hoo Lee Stolen Base"
+        elif batter == "Matt Chapman":
+            if event in {"Double", "Triple", "Home Run"}:
+                return True, f"Priority: Matt Chapman {event}"
+        elif batter == "Tyler Fitzgerald":
+            if event in {"Single", "Double", "Triple", "Home Run"}:
+                return True, f"Priority: Tyler Fitzgerald {event}"
+        elif batter == "Willy Adames":
+            if event in {"Double", "Triple", "Home Run"}:
+                return True, f"Priority: Willy Adames {event}"
+
+    return False, "No posting condition met"
+
+def generate_post(description):
+    messages = [
+        {"role": "system", "content": WADE_PROMPT},
+        {"role": "user", "content": f"Write a Bluesky post reacting to this: {description}"}
+    ]
+    response = client_ai.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        temperature=0.85,
+        max_tokens=300
+    )
+    post = response.choices[0].message.content.strip()
+    if "#SFGiants" not in post:
+        post += " #SFGiants"
+    return post[:300]
+
+def log_post(post_text):
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    with open("wade_posts_log.txt", "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {post_text}\n")
+
+# === MAIN LOOP ===
+
+print("🤖 Wade Live 2.1 (Render Edition) initialised...")
 
 while True:
     try:
-        data = fetch_plays(game_id)
-        linescore = data.get("liveData", {}).get("linescore", {})
-        plays = data.get("liveData", {}).get("plays", {}).get("allPlays", [])
-
-        if not plays:
-            print("⏳ No plays yet. Waiting...")
+        if not is_giants_game_today(giants_schedule):
+            print("📆 No Giants game today. Sleeping...")
             time.sleep(SLEEP_INTERVAL)
             continue
 
-        latest_play = plays[-1]
-        play_id = latest_play.get("playId") or latest_play.get("playEndTime")
-        atbat_index = latest_play.get("atBatIndex")
-        event = latest_play.get("result", {}).get("event")
-        desc = latest_play.get("result", {}).get("description")
-        batter = latest_play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
-
-        # Only react to completed plays
-        if not event or not desc or event.lower() == "pending":
-            print(f"⏳ Incomplete play for {batter} — skipping.")
+        game_id = get_game_id()
+        if not game_id:
+            print("❌ No Giants game found today. Sleeping...")
             time.sleep(SLEEP_INTERVAL)
             continue
 
-        team_id_raw = get_team_id_from_play(latest_play)
-        team_label = team_map.get(team_id_raw, f"Team ID: {team_id_raw}" if team_id_raw else "Unknown")
+        print(f"📺 Monitoring Giants Game ID: {game_id}")
+        
+        while True:
+            plays = fetch_all_plays(game_id)
+            print(f"🔍 Fetched {len(plays)} plays...")
 
-        inning = latest_play.get("about", {}).get("inning", "?")
-        half = "Top" if latest_play.get("about", {}).get("halfInning") == "top" else "Bottom"
+            for play in plays:
+                play_id = play.get("playId")
+                if not play_id or play_id in processed_play_ids:
+                    continue
 
-        print(f"\n📡 [{datetime.datetime.now().strftime('%H:%M:%S')}] [{inning} {half}] {batter} — {event} — {desc}")
-        print(f"🧠 Wade Brain: evaluating play...")
+                processed_play_ids.add(play_id)
 
-        if not play_id:
-            print("⚠️ Skipped: Missing play ID.")
+                batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
+                event = play.get("result", {}).get("event", "Unknown")
+                desc = play.get("result", {}).get("description", "")
+                inning = play.get("about", {}).get("inning", "?")
+                half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
+
+                decision, reason = should_post(play)
+
+                print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
+
+                if decision:
+                    print("📢 Trigger matched. Generating post...")
+                    post = generate_post(desc)
+                    print(f"📤 Posting: {post}")
+                    client_bsky.send_post(text=post)
+                    log_post(post)
+
             time.sleep(SLEEP_INTERVAL)
-            continue
-
-        if play_id in posted_play_ids:
-            print("🔁 Skipped: Already processed this play.")
-            time.sleep(SLEEP_INTERVAL)
-            continue
-
-        posted_play_ids.add(play_id)
-
-        if not is_giants_at_bat(latest_play):
-            print("📋 Play not by Giants batter. No post needed.")
-            time.sleep(SLEEP_INTERVAL)
-            continue
-
-        if atbat_index != last_giants_atbat_index:
-            last_giants_atbat_index = atbat_index
-            if not should_post(latest_play, linescore):
-                plate_appearance_drought += 1
-                print(f"🛑 No posting trigger detected. Drought count: {plate_appearance_drought}")
-            else:
-                plate_appearance_drought = 0
-        else:
-            print("🔁 Same plate appearance. No new decision needed.")
-            time.sleep(SLEEP_INTERVAL)
-            continue
-
-        if plate_appearance_drought >= EXISTENTIAL_THRESHOLD:
-            existential_post = generate_existential_post()
-            print(f"🌀 Existential Post Triggered: {existential_post}")
-            client_bsky.send_post(text=existential_post)
-            plate_appearance_drought = 0
-            continue
-
-        if not should_post(latest_play, linescore):
-            print("🛑 Did not meet posting criteria.")
-            time.sleep(SLEEP_INTERVAL)
-            continue
-
-        if not allowed_to_post():
-            print("🛑 Skipped: Rate limit reached. Waiting...")
-            time.sleep(SLEEP_INTERVAL)
-            continue
-
-        print("✅ Posting trigger detected. Generating post...")
-        post = generate_post(desc)
-        print(f"📤 Posting to Bluesky: {post}")
-        client_bsky.send_post(text=post)
-        log_post(latest_play, post, game_id)
-
-        plate_appearance_drought = 0
-
-        if os.path.exists("kill_wade.txt"):
-            print("🛑 Kill switch triggered. Shutting down...")
-            os.remove("kill_wade.txt")
-            break
-
-        time.sleep(SLEEP_INTERVAL)
 
     except Exception as e:
         print(f"❌ ERROR: {e}")

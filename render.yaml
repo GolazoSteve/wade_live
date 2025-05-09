@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: wade-live
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: BLUESKY_HANDLE
+        sync: false
+      - key: BLUESKY_PASSWORD
+        sync: false

@@ -1,5 +1,5 @@
 """
-Wade Live 2.5 – Robust play ID fallback
+Wade Live 2.5.1 – Debug HTML + Play ID Fallback
 """
 
 import os
@@ -13,20 +13,26 @@ from openai import OpenAI
 from atproto import Client
 from zoneinfo import ZoneInfo
 
+# === CONFIGURATION ===
+
 SLEEP_INTERVAL = 60
 TEAM_ID = 137  # San Francisco Giants
 
+# Load environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BLUESKY_HANDLE = os.getenv("BLUESKY_HANDLE")
 BLUESKY_PASSWORD = os.getenv("BLUESKY_PASSWORD")
 
+# Clients
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 client_bsky = Client()
 client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
 
+# Load Wade's prompt
 with open("wade_prompt.txt", "r", encoding="utf-8") as f:
     WADE_PROMPT = f.read()
 
+# Load Giants schedule
 try:
     with open("giants_schedule.json", "r", encoding="utf-8") as f:
         giants_schedule = json.load(f)
@@ -34,11 +40,15 @@ except Exception as e:
     print(f"❌ Could not load Giants schedule: {e}")
     giants_schedule = []
 
+# === GLOBAL STATE TRACKERS ===
+
 processed_play_ids = set()
 current_game_id = None
 latest_play_count = 0
 posts_made = 0
 log_lines = []
+
+# === PLAYER PRIORITIES ===
 
 priority_players = {
     "Jung Hoo Lee": {"hits": True, "walks": True, "steals": True},
@@ -46,6 +56,8 @@ priority_players = {
     "Tyler Fitzgerald": {"hits": True},
     "Willy Adames": {"xbh": True}
 }
+
+# === FUNCTIONS ===
 
 def is_giants_game_today(schedule):
     today_pacific = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
@@ -137,6 +149,8 @@ def log_post(post_text):
     with open("wade_posts_log.txt", "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {post_text}\n")
 
+# === FLASK APP SETUP ===
+
 app = Flask(__name__)
 
 @app.route('/')
@@ -155,15 +169,84 @@ def status():
     })
 
 @app.route('/log')
-def log_view():
-    html = "<html><body><h1>Wade Debug Log</h1><pre>{}</pre></body></html>".format("\n".join(log_lines[-200:]))
+def log():
+    html = "<html><head><title>Wade Debug Log</title><meta http-equiv='refresh' content='10'></head><body style='font-family: monospace; white-space: pre-wrap;'>"
+    html += "\n".join(log_lines[-200:]) + "</body></html>"
     return html
+
+# === BACKGROUND TASK ===
 
 def wade_loop():
     global current_game_id, latest_play_count, posts_made
 
-    log_lines.append("🤖 Wade Live 2.5 (ID fallback) started...")
+    log_lines.append("🤖 Wade Live 2.5.1 (Debug + Fallback ID) started...")
 
     while True:
         try:
-            if not
+            if not is_giants_game_today(giants_schedule):
+                log_lines.append("📆 No Giants game today. Sleeping...")
+                time.sleep(SLEEP_INTERVAL)
+                continue
+
+            game_id = get_game_id()
+            if not game_id:
+                log_lines.append("❌ No Giants game found today. Sleeping...")
+                time.sleep(SLEEP_INTERVAL)
+                continue
+
+            current_game_id = game_id
+            log_lines.append(f"📺 Monitoring Giants Game ID: {game_id}")
+            
+            while True:
+                plays = fetch_all_plays(game_id)
+                latest_play_count = len(plays)
+                log_lines.append(f"🔍 Fetched {latest_play_count} plays...")
+
+                for play in plays:
+                    play_id = play.get("playId") or play.get("playEndTime") or (
+                        f"{play.get('about', {}).get('inning')}-"
+                        f"{play.get('about', {}).get('halfInning')}-"
+                        f"{play.get('matchup', {}).get('batter', {}).get('id')}-"
+                        f"{play.get('result', {}).get('event')}"
+                    )
+
+                    log_lines.append(f"👀 Checking play: {play_id} (batter: {play.get('matchup', {}).get('batter', {}).get('fullName', 'Unknown')})")
+
+                    if play_id in processed_play_ids:
+                        log_lines.append(f"⏩ Skipping play {play_id} (already processed)")
+                        continue
+
+                    processed_play_ids.add(play_id)
+
+                    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
+                    event = play.get("result", {}).get("event", "Unknown")
+                    desc = play.get("result", {}).get("description", "")
+                    inning = play.get("about", {}).get("inning", "?")
+                    half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
+
+                    decision, reason = should_post(play)
+
+                    log_lines.append(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
+
+                    if decision:
+                        post = generate_post(desc)
+                        log_lines.append(f"📤 POSTING:\n{post}")
+                        client_bsky.send_post(text=post)
+                        log_post(post)
+                        posts_made += 1
+
+                time.sleep(SLEEP_INTERVAL)
+
+        except Exception as e:
+            log_lines.append(f"❌ ERROR: {e}")
+            time.sleep(SLEEP_INTERVAL)
+
+# === START BACKGROUND THREAD ALWAYS ===
+
+threading.Thread(target=wade_loop, daemon=True).start()
+
+# === START FLASK SERVER LOCALLY ===
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

@@ -1,7 +1,5 @@
 """
-Wade Live 2.1 (Gunicorn-Compatible Flask Edition)
-- Flask server runs on / (required by Render)
-- Wade bot runs in background thread
+Wade Live 2.2 – Flask with /status endpoint
 """
 
 import os
@@ -10,14 +8,14 @@ import datetime
 import requests
 import json
 import threading
-from flask import Flask
+from flask import Flask, jsonify
 from openai import OpenAI
 from atproto import Client
 from zoneinfo import ZoneInfo
 
 # === CONFIGURATION ===
 
-SLEEP_INTERVAL = 60  # Check every 60 seconds
+SLEEP_INTERVAL = 60
 TEAM_ID = 137  # San Francisco Giants
 
 # Load environment variables
@@ -42,15 +40,21 @@ except Exception as e:
     print(f"❌ Could not load Giants schedule: {e}")
     giants_schedule = []
 
-# Player priorities
+# === GLOBAL STATE TRACKERS ===
+
+processed_play_ids = set()
+current_game_id = None
+latest_play_count = 0
+posts_made = 0
+
+# === PLAYER PRIORITIES ===
+
 priority_players = {
     "Jung Hoo Lee": {"hits": True, "walks": True, "steals": True},
     "Matt Chapman": {"xbh": True},
     "Tyler Fitzgerald": {"hits": True},
     "Willy Adames": {"xbh": True}
 }
-
-processed_play_ids = set()
 
 # === FUNCTIONS ===
 
@@ -152,10 +156,23 @@ app = Flask(__name__)
 def home():
     return "Wade Live is running."
 
+@app.route('/status')
+def status():
+    today_pacific = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+    return jsonify({
+        "date": today_pacific,
+        "game_id": current_game_id,
+        "plays_fetched": latest_play_count,
+        "posts_made": posts_made,
+        "is_game_today": is_giants_game_today(giants_schedule)
+    })
+
 # === BACKGROUND TASK ===
 
 def wade_loop():
-    print("🤖 Wade Live 2.1 (Gunicorn Edition) initialised...")
+    global current_game_id, latest_play_count, posts_made
+
+    print("🤖 Wade Live 2.2 (Gunicorn Edition) initialised...")
 
     while True:
         try:
@@ -170,11 +187,13 @@ def wade_loop():
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
+            current_game_id = game_id
             print(f"📺 Monitoring Giants Game ID: {game_id}")
             
             while True:
                 plays = fetch_all_plays(game_id)
-                print(f"🔍 Fetched {len(plays)} plays...")
+                latest_play_count = len(plays)
+                print(f"🔍 Fetched {latest_play_count} plays...")
 
                 for play in plays:
                     play_id = play.get("playId")
@@ -199,6 +218,7 @@ def wade_loop():
                         print(f"📤 Posting: {post}")
                         client_bsky.send_post(text=post)
                         log_post(post)
+                        posts_made += 1
 
                 time.sleep(SLEEP_INTERVAL)
 
@@ -206,11 +226,11 @@ def wade_loop():
             print(f"❌ ERROR: {e}")
             time.sleep(SLEEP_INTERVAL)
 
-# === START BOT THREAD WHEN APP IS IMPORTED ===
+# === START BACKGROUND THREAD ALWAYS ===
 
 threading.Thread(target=wade_loop, daemon=True).start()
 
-# === START FLASK APP (REQUIRED FOR RENDER) ===
+# === START FLASK SERVER LOCALLY ===
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

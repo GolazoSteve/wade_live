@@ -1,5 +1,5 @@
 """
-Wade Live 2.2 – Flask with /status endpoint
+Wade Live 2.3 – Logging + Debug HTML
 """
 
 import os
@@ -8,7 +8,7 @@ import datetime
 import requests
 import json
 import threading
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template_string
 from openai import OpenAI
 from atproto import Client
 from zoneinfo import ZoneInfo
@@ -46,6 +46,7 @@ processed_play_ids = set()
 current_game_id = None
 latest_play_count = 0
 posts_made = 0
+log_lines = []  # in-memory debug log
 
 # === PLAYER PRIORITIES ===
 
@@ -65,10 +66,10 @@ def is_giants_game_today(schedule):
             start_time = datetime.datetime.fromisoformat(game["start_time_utc"].replace("Z", "+00:00"))
             start_time_pacific = start_time.astimezone(ZoneInfo("America/Los_Angeles"))
             if start_time_pacific.date() == today_pacific:
-                print(f"✅ Giants game today at {start_time_pacific.strftime('%I:%M %p PT')}")
+                log_lines.append(f"✅ Giants game today at {start_time_pacific.strftime('%I:%M %p PT')}")
                 return True
         except Exception as e:
-            print(f"⚠️ Error parsing game time: {e}")
+            log_lines.append(f"⚠️ Error parsing game time: {e}")
     return False
 
 def get_game_id():
@@ -148,7 +149,7 @@ def log_post(post_text):
     with open("wade_posts_log.txt", "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {post_text}\n")
 
-# === FLASK APP SETUP ===
+# === FLASK SETUP ===
 
 app = Flask(__name__)
 
@@ -167,33 +168,38 @@ def status():
         "is_game_today": is_giants_game_today(giants_schedule)
     })
 
+@app.route('/log')
+def log_view():
+    html = "<html><body><h1>Wade Debug Log</h1><pre>{}</pre></body></html>".format("\n".join(log_lines[-200:]))
+    return html
+
 # === BACKGROUND TASK ===
 
 def wade_loop():
     global current_game_id, latest_play_count, posts_made
 
-    print("🤖 Wade Live 2.2 (Gunicorn Edition) initialised...")
+    log_lines.append("🤖 Wade Live 2.3 (Debug + HTML Log) started...")
 
     while True:
         try:
             if not is_giants_game_today(giants_schedule):
-                print("📆 No Giants game today. Sleeping...")
+                log_lines.append("📆 No Giants game today. Sleeping...")
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
             game_id = get_game_id()
             if not game_id:
-                print("❌ No Giants game found today. Sleeping...")
+                log_lines.append("❌ No Giants game found today. Sleeping...")
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
             current_game_id = game_id
-            print(f"📺 Monitoring Giants Game ID: {game_id}")
-            
+            log_lines.append(f"📺 Monitoring Giants Game ID: {game_id}")
+
             while True:
                 plays = fetch_all_plays(game_id)
                 latest_play_count = len(plays)
-                print(f"🔍 Fetched {latest_play_count} plays...")
+                log_lines.append(f"🔍 Fetched {latest_play_count} plays...")
 
                 for play in plays:
                     play_id = play.get("playId")
@@ -210,12 +216,12 @@ def wade_loop():
 
                     decision, reason = should_post(play)
 
-                    print(f"📃 [{inning}{half}] {batter} — {event.upper()} — Reason: {reason}")
+                    log_lines.append(f"📃 [{inning}{half}] {batter} — {event} — {desc}")
+                    log_lines.append(f"🧠 DECISION: {decision} — Reason: {reason}")
 
                     if decision:
-                        print("📢 Trigger matched. Generating post...")
                         post = generate_post(desc)
-                        print(f"📤 Posting: {post}")
+                        log_lines.append(f"📤 POSTING TO BLUESKY:\n{post}")
                         client_bsky.send_post(text=post)
                         log_post(post)
                         posts_made += 1
@@ -223,14 +229,14 @@ def wade_loop():
                 time.sleep(SLEEP_INTERVAL)
 
         except Exception as e:
-            print(f"❌ ERROR: {e}")
+            log_lines.append(f"❌ ERROR: {e}")
             time.sleep(SLEEP_INTERVAL)
 
-# === START BACKGROUND THREAD ALWAYS ===
+# === START BACKGROUND THREAD ===
 
 threading.Thread(target=wade_loop, daemon=True).start()
 
-# === START FLASK SERVER LOCALLY ===
+# === START FLASK LOCALLY ===
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

@@ -209,3 +209,9 @@ def wade_loop():
 # === START BOT THREAD WHEN APP IS IMPORTED ===
 
 threading.Thread(target=wade_loop, daemon=True).start()
+
+# === START FLASK APP (REQUIRED FOR RENDER) ===
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

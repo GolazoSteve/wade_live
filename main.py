@@ -1,5 +1,5 @@
 """
-Wade Live 2.5.1 – Debug HTML + Play ID Fallback
+Wade Live 2.6 – Styled HTML Log + Debug
 """
 
 import os
@@ -170,8 +170,29 @@ def status():
 
 @app.route('/log')
 def log():
-    html = "<html><head><title>Wade Debug Log</title><meta http-equiv='refresh' content='10'></head><body style='font-family: monospace; white-space: pre-wrap;'>"
-    html += "\n".join(log_lines[-200:]) + "</body></html>"
+    html = """
+    <html><head><title>Wade Debug Log</title>
+    <meta http-equiv='refresh' content='10'>
+    <style>
+    body { font-family: monospace; background: #111; color: #eee; padding: 1em; }
+    .play { margin-bottom: 1em; }
+    .event { color: #ccc; }
+    .timestamp { color: #888; }
+    .post { color: #6cf; font-style: italic; }
+    .bold { font-weight: bold; }
+    </style>
+    </head><body>
+    """
+    for line in log_lines[-200:]:
+        if "📤 POSTING:" in line:
+            html += f"<div class='play post'>📤 <em>{line.replace('📤 POSTING:', '').strip()}</em></div>"
+        elif line.startswith("📃"):
+            html += f"<div class='play bold'>{line}</div>"
+        elif line.startswith("👀") or line.startswith("✅") or line.startswith("📺"):
+            html += f"<div class='play event'>{line}</div>"
+        else:
+            html += f"<div class='play timestamp'>{line}</div>"
+    html += "</body></html>"
     return html
 
 # === BACKGROUND TASK ===
@@ -179,7 +200,7 @@ def log():
 def wade_loop():
     global current_game_id, latest_play_count, posts_made
 
-    log_lines.append("🤖 Wade Live 2.5.1 (Debug + Fallback ID) started...")
+    log_lines.append("🤖 Wade Live 2.6 (Styled Log Edition) started...")
 
     while True:
         try:
@@ -196,7 +217,7 @@ def wade_loop():
 
             current_game_id = game_id
             log_lines.append(f"📺 Monitoring Giants Game ID: {game_id}")
-            
+
             while True:
                 plays = fetch_all_plays(game_id)
                 latest_play_count = len(plays)
@@ -230,7 +251,7 @@ def wade_loop():
 
                     if decision:
                         post = generate_post(desc)
-                        log_lines.append(f"📤 POSTING:\n{post}")
+                        log_lines.append(f"📤 POSTING: {post}")
                         client_bsky.send_post(text=post)
                         log_post(post)
                         posts_made += 1

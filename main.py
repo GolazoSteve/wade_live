@@ -1,5 +1,5 @@
 """
-Wade Live 2.4 – Debug Log Patch
+Wade Live 2.5 – Robust play ID fallback
 """
 
 import os
@@ -162,68 +162,8 @@ def log_view():
 def wade_loop():
     global current_game_id, latest_play_count, posts_made
 
-    log_lines.append("🤖 Wade Live 2.4 (Debug Patch) started...")
+    log_lines.append("🤖 Wade Live 2.5 (ID fallback) started...")
 
     while True:
         try:
-            if not is_giants_game_today(giants_schedule):
-                log_lines.append("📆 No Giants game today. Sleeping...")
-                time.sleep(SLEEP_INTERVAL)
-                continue
-
-            game_id = get_game_id()
-            if not game_id:
-                log_lines.append("❌ No Giants game found today. Sleeping...")
-                time.sleep(SLEEP_INTERVAL)
-                continue
-
-            current_game_id = game_id
-            log_lines.append(f"📺 Monitoring Giants Game ID: {game_id}")
-
-            while True:
-                plays = fetch_all_plays(game_id)
-                latest_play_count = len(plays)
-                log_lines.append(f"🔍 Fetched {latest_play_count} plays...")
-
-                for play in plays:
-                    play_id = play.get("playId")
-                    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
-                    log_lines.append(f"👀 Checking play: {play_id} (batter: {batter})")
-
-                    if not play_id:
-                        log_lines.append("⚠️ Skipping play: No playId")
-                        continue
-                    if play_id in processed_play_ids:
-                        log_lines.append(f"⏩ Skipping play {play_id} (already processed)")
-                        continue
-
-                    processed_play_ids.add(play_id)
-
-                    event = play.get("result", {}).get("event", "Unknown")
-                    desc = play.get("result", {}).get("description", "")
-                    inning = play.get("about", {}).get("inning", "?")
-                    half = "T" if play.get("about", {}).get("halfInning") == "top" else "B"
-
-                    decision, reason = should_post(play)
-
-                    log_lines.append(f"📃 [{inning}{half}] {batter} — {event} — {desc}")
-                    log_lines.append(f"🧠 DECISION: {decision} — Reason: {reason}")
-
-                    if decision:
-                        post = generate_post(desc)
-                        log_lines.append(f"📤 POSTING TO BLUESKY:\n{post}")
-                        client_bsky.send_post(text=post)
-                        log_post(post)
-                        posts_made += 1
-
-                time.sleep(SLEEP_INTERVAL)
-
-        except Exception as e:
-            log_lines.append(f"❌ ERROR: {e}")
-            time.sleep(SLEEP_INTERVAL)
-
-threading.Thread(target=wade_loop, daemon=True).start()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+            if not

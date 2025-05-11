@@ -1,5 +1,5 @@
 """
-Wade Live 2.3 – Logging + Debug HTML
+Wade Live 2.4 – Debug Log Patch
 """
 
 import os
@@ -13,26 +13,20 @@ from openai import OpenAI
 from atproto import Client
 from zoneinfo import ZoneInfo
 
-# === CONFIGURATION ===
-
 SLEEP_INTERVAL = 60
 TEAM_ID = 137  # San Francisco Giants
 
-# Load environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BLUESKY_HANDLE = os.getenv("BLUESKY_HANDLE")
 BLUESKY_PASSWORD = os.getenv("BLUESKY_PASSWORD")
 
-# Clients
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 client_bsky = Client()
 client_bsky.login(BLUESKY_HANDLE, BLUESKY_PASSWORD)
 
-# Load Wade's prompt
 with open("wade_prompt.txt", "r", encoding="utf-8") as f:
     WADE_PROMPT = f.read()
 
-# Load Giants schedule
 try:
     with open("giants_schedule.json", "r", encoding="utf-8") as f:
         giants_schedule = json.load(f)
@@ -40,15 +34,11 @@ except Exception as e:
     print(f"❌ Could not load Giants schedule: {e}")
     giants_schedule = []
 
-# === GLOBAL STATE TRACKERS ===
-
 processed_play_ids = set()
 current_game_id = None
 latest_play_count = 0
 posts_made = 0
-log_lines = []  # in-memory debug log
-
-# === PLAYER PRIORITIES ===
+log_lines = []
 
 priority_players = {
     "Jung Hoo Lee": {"hits": True, "walks": True, "steals": True},
@@ -56,8 +46,6 @@ priority_players = {
     "Tyler Fitzgerald": {"hits": True},
     "Willy Adames": {"xbh": True}
 }
-
-# === FUNCTIONS ===
 
 def is_giants_game_today(schedule):
     today_pacific = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
@@ -149,8 +137,6 @@ def log_post(post_text):
     with open("wade_posts_log.txt", "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {post_text}\n")
 
-# === FLASK SETUP ===
-
 app = Flask(__name__)
 
 @app.route('/')
@@ -173,12 +159,10 @@ def log_view():
     html = "<html><body><h1>Wade Debug Log</h1><pre>{}</pre></body></html>".format("\n".join(log_lines[-200:]))
     return html
 
-# === BACKGROUND TASK ===
-
 def wade_loop():
     global current_game_id, latest_play_count, posts_made
 
-    log_lines.append("🤖 Wade Live 2.3 (Debug + HTML Log) started...")
+    log_lines.append("🤖 Wade Live 2.4 (Debug Patch) started...")
 
     while True:
         try:
@@ -203,12 +187,18 @@ def wade_loop():
 
                 for play in plays:
                     play_id = play.get("playId")
-                    if not play_id or play_id in processed_play_ids:
+                    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
+                    log_lines.append(f"👀 Checking play: {play_id} (batter: {batter})")
+
+                    if not play_id:
+                        log_lines.append("⚠️ Skipping play: No playId")
+                        continue
+                    if play_id in processed_play_ids:
+                        log_lines.append(f"⏩ Skipping play {play_id} (already processed)")
                         continue
 
                     processed_play_ids.add(play_id)
 
-                    batter = play.get("matchup", {}).get("batter", {}).get("fullName", "Unknown")
                     event = play.get("result", {}).get("event", "Unknown")
                     desc = play.get("result", {}).get("description", "")
                     inning = play.get("about", {}).get("inning", "?")
@@ -232,11 +222,7 @@ def wade_loop():
             log_lines.append(f"❌ ERROR: {e}")
             time.sleep(SLEEP_INTERVAL)
 
-# === START BACKGROUND THREAD ===
-
 threading.Thread(target=wade_loop, daemon=True).start()
-
-# === START FLASK LOCALLY ===
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

@@ -13,6 +13,7 @@ import threading
 from flask import Flask
 from openai import OpenAI
 from atproto import Client
+from zoneinfo import ZoneInfo
 
 # === CONFIGURATION ===
 
@@ -54,14 +55,20 @@ processed_play_ids = set()
 # === FUNCTIONS ===
 
 def is_giants_game_today(schedule):
-    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    today_pacific = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date()
     for game in schedule:
-        if game.get("date") == today and not game.get("off_day", False):
-            return True
+        try:
+            start_time = datetime.datetime.fromisoformat(game["start_time_utc"].replace("Z", "+00:00"))
+            start_time_pacific = start_time.astimezone(ZoneInfo("America/Los_Angeles"))
+            if start_time_pacific.date() == today_pacific:
+                print(f"✅ Giants game today at {start_time_pacific.strftime('%I:%M %p PT')}")
+                return True
+        except Exception as e:
+            print(f"⚠️ Error parsing game time: {e}")
     return False
 
 def get_game_id():
-    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    today = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
     url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={today}"
     response = requests.get(url).json()
     for date in response.get("dates", []):
